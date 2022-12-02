@@ -65,6 +65,7 @@ object StreamingWAF {
       parameter = ParameterToolUtils.fromApplicationProperties(applicationProperties)
     }
     val params = ParameterToolUtils.genParams(parameter)
+    log.info("waf-params"+params.toString)
 
     // 创建 table env，流模式
     val settings = EnvironmentSettings.newInstance().inStreamingMode().build()
