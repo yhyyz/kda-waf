@@ -65,10 +65,13 @@ aws --profile ue1 --region us-east-1 kinesis put-record \
     --partition-key 1  
 ```
 
+
 #### build
 ```sh
 mvn clean package -Dscope.type=provided
+# 使用不同类时，注意修改pom的MainClass
 ```
+
 ![](https://pcmyp.oss-accelerate.aliyuncs.com/markdown/20221203022004.png)
 ![](https://pcmyp.oss-accelerate.aliyuncs.com/markdown/20221203022134.png)
 * Lookup Join
