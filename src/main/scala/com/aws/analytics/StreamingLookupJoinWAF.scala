@@ -18,7 +18,6 @@
 
 package com.aws.analytics
 
-
 import com.amazonaws.services.kinesisanalytics.runtime.KinesisAnalyticsRuntime
 import com.aws.analytics.model.{ParamsModel}
 import com.aws.analytics.util.{ParameterToolUtils, StreamPos}
@@ -45,12 +44,16 @@ import org.apache.flink.table.expressions.ExpressionParserImpl.PROCTIME
 import org.apache.flink.types.Row
 import org.apache.logging.log4j.LogManager
 
-object StreamingWAF {
-  private val log = LogManager.getLogger(StreamingWAF.getClass)
+/**
+ * LookUp JOIN
+ */
+object StreamingLookupJoinWAF {
+  private val log = LogManager.getLogger(StreamingLookupJoinWAF.getClass)
 
   def main(args: Array[String]) {
     // set up the streaming execution environment
     val env = StreamExecutionEnvironment.getExecutionEnvironment
+    //      .disableOperatorChaining()
     // 注意在Kinesis Analysis 运行时中该参数不生效，需要在CLI中设置相关参数，同时KDA 默认会使用RocksDB存储状态，不用设置
     env.enableCheckpointing(5000)
     var parameter: ParameterTool = null
@@ -64,14 +67,14 @@ object StreamingWAF {
       }
       parameter = ParameterToolUtils.fromApplicationProperties(applicationProperties)
     }
-    val params = ParameterToolUtils.genParams(parameter)
-    log.info("waf-params" + params.toString)
+    val params = ParameterToolUtils.genLookupJoinParams(parameter)
+    log.info("waf-lookup-join-params" + params.toString)
 
     // 创建 table env，流模式
     val settings = EnvironmentSettings.newInstance().inStreamingMode().build()
     val tEnv = StreamTableEnvironment.create(env, settings)
     val conf = new Configuration()
-    conf.setString("pipeline.name", "kda-waf");
+    conf.setString("pipeline.name", "kda-waf-lookup-join");
     tEnv.getConfig.addConfiguration(conf)
 
     val source = createSourceFromStaticConfig(env, params)
@@ -97,6 +100,7 @@ object StreamingWAF {
     if (params.projectEnv == "local") {
       credentialsProvider = "BASIC"
     }
+
     val createTargetTable =
       s"""
          |CREATE TABLE target_table (
@@ -118,28 +122,55 @@ object StreamingWAF {
          |""".stripMargin
     tEnv.executeSql(createTargetTable)
 
+    val mysqlTemporaryTable =
+      s"""
+        |CREATE TEMPORARY TABLE dim_tb (
+        |  id INT,
+        |  trigger_value int,
+        |  url STRING,
+        |  proc_time AS PROCTIME()
+        |) WITH (
+        |  'connector' = 'jdbc',
+        |  'url' = '${params.mysqlHost}',
+        |  'table-name' = '${params.mysqlTable}',
+        |  'username' = '${params.mysqlUser}',
+        |  'password' = '${params.mysqlPassword}',
+        |  'lookup.cache.ttl' = '${params.cacheTTL}',
+        |  'lookup.cache.max-rows' = '${params.cacheMaxrows}'
+        |);
+        |""".stripMargin
+
+    tEnv.executeSql(mysqlTemporaryTable)
+
     val calcSql =
       s"""
          |INSERT INTO target_table
-         |SELECT
-         |ip,
-         |url,
+         |select
+         |t.ip,
+         |t.url,
          |count(1) as times,
-         |TUMBLE_START(ts, INTERVAL '${params.windowSize}' SECONDS) as window_start,
-         |TUMBLE_END(ts, INTERVAL '${params.windowSize}' SECONDS) as window_end
-         |FROM source_table
-         |GROUP BY TUMBLE(ts, INTERVAL '${params.windowSize}' SECONDS),ip,url
-         |HAVING count(1)>=${params.triggerValue};
+         |TUMBLE_START(t.ts, INTERVAL '${params.windowSize}' SECONDS) as window_start,
+         |TUMBLE_END(t.ts, INTERVAL '${params.windowSize}' SECONDS) as window_end
+         |from (
+         |SELECT
+         |s.ip as ip ,
+         |s.url as url,
+         |s.ts as ts ,
+         |d.trigger_value as trigger_value,
+         |d.url as dim_url
+         |FROM source_table as s
+         |join dim_tb  FOR SYSTEM_TIME  AS OF  s.ts  AS d
+         |on s.url=d.url) as t
+         | GROUP BY TUMBLE(t.ts, INTERVAL '${params.windowSize}' SECONDS),t.ip,t.url,t.trigger_value
+         | HAVING count(1)>=t.trigger_value;
          |""".stripMargin
-
-
     val stat = tEnv.createStatementSet()
     stat.addInsertSql(calcSql)
     stat.execute()
 
   }
 
-  def createSourceFromStaticConfig(env: StreamExecutionEnvironment, params: ParamsModel.Params): DataStream[String] = {
+  def createSourceFromStaticConfig(env: StreamExecutionEnvironment, params: ParamsModel.LookupJoinParams): DataStream[String] = {
     val consumerConfig = new Properties()
     consumerConfig.put(AWSConfigConstants.AWS_REGION, params.awsRgeion)
     // 生产环境不用AKSK，本地调试可以使用

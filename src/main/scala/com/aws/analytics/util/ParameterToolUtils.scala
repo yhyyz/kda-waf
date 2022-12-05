@@ -30,4 +30,42 @@ object ParameterToolUtils {
     params
   }
 
+  def genLookupJoinParams(parameter: ParameterTool): ParamsModel.LookupJoinParams = {
+    val projectEnv = parameter.get("project_env")
+    val awsRegion = parameter.get("aws_region")
+    val ak = parameter.get("ak")
+    val sk = parameter.get("sk")
+    val inputStreamName = parameter.get("input_stream_name")
+    val streamInitPosition = parameter.get("stream_init_position")
+    val streamInitialTimestamp = parameter.get("stream_initial_timestamp")
+    val targetStreamName = parameter.get("target_stream_name")
+    val windowSize = parameter.get("window_size")
+    val mysqlHost=parameter.get("mysql_host")
+    val mysqlUser=parameter.get("mysql_user")
+    val mysqlPassword=parameter.get("mysql_password")
+    val mysqlTable=parameter.get("mysql_table")
+    val cacheTTL = parameter.get("cache_ttl")
+    val cacheMaxrows = parameter.get("cache_maxrows")
+    val params = ParamsModel.LookupJoinParams.apply(projectEnv,awsRegion,ak,sk,inputStreamName, streamInitPosition, streamInitialTimestamp,
+      targetStreamName,windowSize,mysqlHost,mysqlUser,mysqlPassword,mysqlTable,cacheTTL,cacheMaxrows)
+    params
+  }
+
+  def genTemporaryJoinParams(parameter: ParameterTool): ParamsModel.TemporaryJoinParams = {
+    val projectEnv = parameter.get("project_env")
+    val awsRegion = parameter.get("aws_region")
+    val ak = parameter.get("ak")
+    val sk = parameter.get("sk")
+    val inputStreamName = parameter.get("input_stream_name")
+    val streamInitPosition = parameter.get("stream_init_position")
+    val streamInitialTimestamp = parameter.get("stream_initial_timestamp")
+    val targetStreamName = parameter.get("target_stream_name")
+    val windowSize = parameter.get("window_size")
+    val dimStreamName=parameter.get("dim_stream_name")
+    val dimStreamInitPosition=parameter.get("dim_stream_init_position")
+    val params = ParamsModel.TemporaryJoinParams.apply(projectEnv,awsRegion,ak,sk,inputStreamName, streamInitPosition, streamInitialTimestamp,
+      targetStreamName,windowSize,dimStreamName,dimStreamInitPosition)
+    params
+  }
+
 }

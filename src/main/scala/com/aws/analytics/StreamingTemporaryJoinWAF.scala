@@ -1,56 +1,37 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 package com.aws.analytics
 
-
 import com.amazonaws.services.kinesisanalytics.runtime.KinesisAnalyticsRuntime
-import com.aws.analytics.model.{ParamsModel}
+import com.aws.analytics.model.ParamsModel
 import com.aws.analytics.util.{ParameterToolUtils, StreamPos}
-import org.apache.flink.api.common.serialization.{SimpleStringEncoder, SimpleStringSchema}
-import org.apache.flink.api.common.typeinfo.TypeInformation
+import org.apache.flink.api.common.serialization.SimpleStringSchema
 import org.apache.flink.api.java.utils.ParameterTool
-import org.apache.flink.api.scala.createTypeInformation
 import org.apache.flink.api.scala.typeutils.Types
 import org.apache.flink.configuration.Configuration
-import org.apache.flink.core.fs.Path
 import org.apache.flink.kinesis.shaded.org.apache.flink.connector.aws.config.AWSConfigConstants
 import org.apache.flink.streaming.api.datastream.DataStream
 import org.apache.flink.streaming.api.environment.{LocalStreamEnvironment, StreamExecutionEnvironment}
-import org.apache.flink.streaming.api.functions.sink.filesystem.StreamingFileSink
-import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.DefaultRollingPolicy
 import org.apache.flink.streaming.connectors.kinesis.FlinkKinesisConsumer
 import org.apache.flink.streaming.connectors.kinesis.config.ConsumerConfigConstants
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment
-
-import java.util.Properties
-import java.util.concurrent.TimeUnit
-import org.apache.flink.table.api.{AnyWithOperations, EnvironmentSettings, FieldExpression, Schema}
-import org.apache.flink.table.expressions.ExpressionParserImpl.PROCTIME
+import org.apache.flink.table.api.{EnvironmentSettings, FieldExpression, Schema}
 import org.apache.flink.types.Row
 import org.apache.logging.log4j.LogManager
 
-object StreamingWAF {
-  private val log = LogManager.getLogger(StreamingWAF.getClass)
+import java.util.Properties
+
+/**
+ * 时态表函数join，可以将维表发送到KDS或者MSK，将append stream转为changelog。
+ * 相比Lookup join ,时态表函数能够从流中加载维度数据到state并实时更新，同时避免依赖MySQL等Connector,带来的缓存cache更新问题及
+ * 未命中cache造成对后端server的性能压力. 缺点是维表初次从流中加载时，没有方式可以保证维表被加载完毕后才执行join，因此启动时可能会有
+ * 关联不到的情况，但这仅存在启动作业时，从维表KDS消费所有数据的时间，这个时间会比较短。
+ */
+object StreamingTemporaryJoinWAF {
+  private val log = LogManager.getLogger(StreamingTemporaryJoinWAF.getClass)
 
   def main(args: Array[String]) {
     // set up the streaming execution environment
     val env = StreamExecutionEnvironment.getExecutionEnvironment
+    //      .disableOperatorChaining()
     // 注意在Kinesis Analysis 运行时中该参数不生效，需要在CLI中设置相关参数，同时KDA 默认会使用RocksDB存储状态，不用设置
     env.enableCheckpointing(5000)
     var parameter: ParameterTool = null
@@ -64,14 +45,14 @@ object StreamingWAF {
       }
       parameter = ParameterToolUtils.fromApplicationProperties(applicationProperties)
     }
-    val params = ParameterToolUtils.genParams(parameter)
-    log.info("waf-params" + params.toString)
+    val params = ParameterToolUtils.genTemporaryJoinParams(parameter)
+    log.info("waf-temporary-join-params" + params.toString)
 
     // 创建 table env，流模式
     val settings = EnvironmentSettings.newInstance().inStreamingMode().build()
     val tEnv = StreamTableEnvironment.create(env, settings)
     val conf = new Configuration()
-    conf.setString("pipeline.name", "kda-waf");
+    conf.setString("pipeline.name", "kda-waf-temporary-join");
     tEnv.getConfig.addConfiguration(conf)
 
     val source = createSourceFromStaticConfig(env, params)
@@ -108,7 +89,7 @@ object StreamingWAF {
          |)
          |WITH (
          |  'connector' = 'kinesis',
-         |  'stream' = 'waf-target',
+         |  'stream' = '${params.targetStreamName}',
          |  'aws.credentials.provider' = '${credentialsProvider}',
          |  'aws.credentials.basic.secretkey' = '${params.sk}',
          |  'aws.credentials.basic.accesskeyid' = '${params.ak}',
@@ -118,28 +99,77 @@ object StreamingWAF {
          |""".stripMargin
     tEnv.executeSql(createTargetTable)
 
+
+    val createDimTable =
+      s"""
+         |CREATE TABLE dim_tb (
+         |  `trigger_value` STRING,
+         |  `url` STRING,
+         |   proc_time AS PROCTIME()
+         |)
+         |WITH (
+         |  'connector' = 'kinesis',
+         |  'stream' = '${params.dimStreamName}',
+         |  'aws.credentials.provider' = '${credentialsProvider}',
+         |  'aws.credentials.basic.secretkey' = '${params.sk}',
+         |  'aws.credentials.basic.accesskeyid' = '${params.ak}',
+         |  'aws.region' = '${params.awsRgeion}',
+         |  'scan.stream.initpos' = '${params.dimStreamInitPosition}',
+         |  'format' = 'json'
+         |);
+         |""".stripMargin
+    tEnv.executeSql(createDimTable)
+
+
+    // append stream to changelog stream
+    val dim_view =
+      """
+        |CREATE VIEW dim_view AS
+        |SELECT url, trigger_value,proc_time
+        |  FROM (
+        |      SELECT *,
+        |      ROW_NUMBER() OVER (PARTITION BY url
+        |         ORDER BY proc_time DESC) AS rowNum
+        |      FROM dim_tb )
+        |WHERE rowNum = 1;
+        |""".stripMargin
+    tEnv.executeSql(dim_view)
+
+
+    val dimTTF = tEnv.sqlQuery("select * from dim_view").createTemporalTableFunction($"proc_time", $"url")
+
+    tEnv.createTemporarySystemFunction("dimTTF", dimTTF)
     val calcSql =
       s"""
          |INSERT INTO target_table
-         |SELECT
-         |ip,
-         |url,
+         |select
+         |t.ip,
+         |t.url,
          |count(1) as times,
-         |TUMBLE_START(ts, INTERVAL '${params.windowSize}' SECONDS) as window_start,
-         |TUMBLE_END(ts, INTERVAL '${params.windowSize}' SECONDS) as window_end
-         |FROM source_table
-         |GROUP BY TUMBLE(ts, INTERVAL '${params.windowSize}' SECONDS),ip,url
-         |HAVING count(1)>=${params.triggerValue};
+         |TUMBLE_START(t.ts, INTERVAL '${params.windowSize}' SECONDS) as window_start,
+         |TUMBLE_END(t.ts, INTERVAL '${params.windowSize}' SECONDS) as window_end
+         |from (
+         |SELECT
+         |s.ip as ip ,
+         |s.url as url,
+         |s.ts as ts ,
+         |d.trigger_value as trigger_value,
+         |d.url as dim_url
+         |FROM source_table as s,
+         |Lateral table (dimTTF(s.ts)) AS d
+         |where s.url=d.url) as t
+         |GROUP BY TUMBLE(t.ts, INTERVAL '${params.windowSize}' SECONDS),t.ip,t.url,t.trigger_value
+         | HAVING count(1)>=t.trigger_value;
          |""".stripMargin
 
-
+    //    tEnv.executeSql(calcSql.replace("INSERT INTO target_table","")).print()
     val stat = tEnv.createStatementSet()
     stat.addInsertSql(calcSql)
     stat.execute()
 
   }
 
-  def createSourceFromStaticConfig(env: StreamExecutionEnvironment, params: ParamsModel.Params): DataStream[String] = {
+  def createSourceFromStaticConfig(env: StreamExecutionEnvironment, params: ParamsModel.TemporaryJoinParams): DataStream[String] = {
     val consumerConfig = new Properties()
     consumerConfig.put(AWSConfigConstants.AWS_REGION, params.awsRgeion)
     // 生产环境不用AKSK，本地调试可以使用
