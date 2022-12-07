@@ -13,4 +13,9 @@ object ParamsModel {
                                  dimStreamName:String,dimStreamInitPosition:String
                              )
 
+  case class HOPTemporaryJoinParams(projectEnv:String ,awsRgeion: String, ak:String,sk:String, inputStreamName: String, streamInitPosition: String, streamInitialTimestamp: String,
+                                 targetStreamName: String,windowSize:String,windowInterval:String,
+                                 dimStreamName:String,dimStreamInitPosition:String
+                                )
+
 }

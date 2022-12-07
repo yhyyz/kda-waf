@@ -66,6 +66,29 @@ aws --profile ue1 --region us-east-1 kinesis put-record \
 ```
 
 
+* Streaming Temporary HOP Join 
+```shell
+-project_env local
+-aws_region us-east-1
+-ak xxx
+-sk xxx
+-input_stream_name waf-source
+-stream_init_position LATEST
+-target_stream_name waf-target
+-window_size 10 # 10s的窗口
+-window_interval 5  # 5s滑动一次
+-dim_stream_name waf-dim
+-dim_stream_init_position TRIM_HORIZON
+```
+```shell
+# {"url":"a.html","trigger_value":2}
+aws --profile ue1 --region us-east-1 kinesis put-record \
+    --stream-name waf-dim \
+    --data "eyJ1cmwiOiJhLmh0bWwiLCJ0cmlnZ2VyX3ZhbHVlIjoyfQo=" \
+    --partition-key 1  
+```
+
+
 #### build
 ```sh
 mvn clean package -Dscope.type=provided

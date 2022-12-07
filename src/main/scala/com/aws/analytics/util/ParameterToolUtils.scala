@@ -68,4 +68,23 @@ object ParameterToolUtils {
     params
   }
 
+  def genHOPTemporaryJoinParams(parameter: ParameterTool): ParamsModel.HOPTemporaryJoinParams = {
+    val projectEnv = parameter.get("project_env")
+    val awsRegion = parameter.get("aws_region")
+    val ak = parameter.get("ak")
+    val sk = parameter.get("sk")
+    val inputStreamName = parameter.get("input_stream_name")
+    val streamInitPosition = parameter.get("stream_init_position")
+    val streamInitialTimestamp = parameter.get("stream_initial_timestamp")
+    val targetStreamName = parameter.get("target_stream_name")
+    val windowSize = parameter.get("window_size")
+    val windowInterval = parameter.get("window_interval")
+    val dimStreamName=parameter.get("dim_stream_name")
+    val dimStreamInitPosition=parameter.get("dim_stream_init_position")
+    val params = ParamsModel.HOPTemporaryJoinParams.apply(projectEnv,awsRegion,ak,sk,inputStreamName, streamInitPosition, streamInitialTimestamp,
+      targetStreamName,windowSize,windowInterval,dimStreamName,dimStreamInitPosition)
+    params
+  }
+
+
 }
